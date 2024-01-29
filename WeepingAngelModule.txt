@@ -1,0 +1,177 @@
+local WeepingAngelModule = {};
+WeepingAngelModule.__index = WeepingAngelModule;
+
+local weeping_angel_event  = game.ReplicatedStorage.WeepingAngel;
+
+local run_service = game:GetService("RunService");
+local players_service = game:GetService("Players");
+
+local test_camera = game.Workspace.TestCamera;
+local tween_service = game:GetService("TweenService");
+local pathfinding_service = game:GetService("PathfindingService");
+
+WeepingAngelModule.angel_speed = 25;
+WeepingAngelModule.kill_distance = 5;
+WeepingAngelModule.max_player_distance = 1000;
+WeepingAngelModule.normal_volume = 0.25;
+
+function WeepingAngelModule.Init()
+	weeping_angel_event.OnServerEvent:Connect(WeepingAngelModule.OnWeepingAngelEvent);
+	players_service.PlayerAdded:Connect(WeepingAngelModule.OnPlayerAdded);
+	players_service.PlayerRemoving:Connect(WeepingAngelModule.OnPlayerRemoved);
+	
+	WeepingAngelModule.players = {}; -- table of PLR, camera cframe, table of camera data [Diagonol fov, fov, maxfov]
+end
+
+function WeepingAngelModule.OnWeepingAngelEvent(player, data, data2)
+	if(typeof(data) ~= "CFrame") then
+		return;
+	end
+	
+	for i = 1, #WeepingAngelModule.players do
+		if(WeepingAngelModule.players[i][1] == player) then
+			WeepingAngelModule.players[i][2] = data;
+			WeepingAngelModule.players[i][3] = data2;
+		end
+	end
+end
+
+function WeepingAngelModule.OnPlayerAdded(player : Player)
+	table.insert(WeepingAngelModule.players, {player, nil});
+end
+
+function WeepingAngelModule.OnPlayerRemoved(player : Player)
+	for i = 1, #WeepingAngelModule.players do
+		if(WeepingAngelModule.players[i][1] == player) then
+			table.remove(WeepingAngelModule.players, i);
+		end
+	end
+end
+function WeepingAngelModule.new(model)
+	local self = setmetatable({}, WeepingAngelModule);
+	
+	self.model = model;
+	self.humanoid = self.model:FindFirstChild("Humanoid");
+	self.humanoid_root_part =  self.model:FindFirstChild("HumanoidRootPart");
+	
+	self.humanoid.WalkSpeed = WeepingAngelModule.angel_speed;
+	
+	self.walking_sound = game.ReplicatedStorage.Sounds.WeepingAngelWalking1:Clone();
+	self.walking_sound.Parent = self.humanoid_root_part;
+	self.walking_sound.Volume = 0;
+	self.walking_sound:Play();
+	
+	self.walking_sound_tween = nil;
+	self.playing_walking_sound = nil;
+	self.path = nil;
+	
+	self:StopWalkingSound();
+	
+	self.move_to_point = self:GetPosition();
+	
+	self.update_loop = run_service.Heartbeat:Connect(function()self:Update()end);
+	return;
+end
+
+function WeepingAngelModule:GetPosition()
+	return self.humanoid_root_part.CFrame.Position;
+end
+
+function WeepingAngelModule:GetMoveToPosition()
+	self.move_to_point = self:GetPosition();
+	
+	--Go through players and follow closest if not seen
+	local is_seen = false;
+	local closest_player_distance = WeepingAngelModule.max_player_distance;
+	local closest_player_position = nil;
+	local closest_humanoid = nil;
+	
+	for i = 1, #WeepingAngelModule.players do
+		--Check if we have the players camera cframe
+		local plr = WeepingAngelModule.players[i];
+		if(plr[2] == nil) then
+			continue;
+		end
+		
+		--Getting Character
+		local character = plr[1].Character;
+		local humanoid = character:FindFirstChild("Humanoid");
+		local humanoid_root_part = character:FindFirstChild("HumanoidRootPart");
+		if(character == nil or humanoid == nil or humanoid_root_part == nil) then
+			continue;
+		end
+		
+		--Checking if player is already dead
+		if(humanoid.Health == nil) then
+			continue;
+		end
+
+		--Check if seen
+		test_camera.CFrame = plr[2];
+		test_camera.DiagonalFieldOfView = plr[3][1];
+		test_camera.FieldOfView = plr[3][2];
+		test_camera.MaxAxisFieldOfView = plr[3][3];
+		local pos, is_in_view = test_camera:WorldToViewportPoint(self:GetPosition());
+		if(is_in_view) then
+			--A player sees it
+			--Break loops 
+			is_seen = true;
+			break;
+		end
+		
+		--Check if is closest player
+		--If so follow
+		
+		local plr_position = humanoid_root_part.CFrame.Position;
+		
+		local distance = (self:GetPosition() - plr_position).Magnitude;
+		
+		--Get Closest player to follow
+		if(distance < closest_player_distance) then
+			closest_player_distance = distance;
+			closest_player_position = plr_position;
+			closest_humanoid = humanoid;
+			
+			--Check if player should get killed
+			if(distance < WeepingAngelModule.kill_distance) then
+				closest_humanoid.Health = nil;
+			end
+		end
+	end
+	
+	if(is_seen == false and closest_player_position ~= nil) then
+		self.move_to_point = closest_player_position;
+		self:StartWalkingSound();
+	else
+		self:StopWalkingSound();
+	end
+end
+
+function WeepingAngelModule:CancelSoundTweenAndReCreate(volume)
+	if(self.walking_sound_tween ~= nil) then
+		self.walking_sound_tween:Pause();
+		self.walking_sound_tween = nil;
+	end
+	self.walking_sound_tween = tween_service:Create(self.walking_sound, TweenInfo.new(0.2, Enum.EasingStyle.Linear), {Volume=volume});
+	self.walking_sound_tween:Play();
+end
+
+function WeepingAngelModule:StartWalkingSound()
+	if(not self.playing_walking_sound) then
+		self:CancelSoundTweenAndReCreate(WeepingAngelModule.normal_volume);
+	end
+	self.playing_walking_sound = true;
+end
+function WeepingAngelModule:StopWalkingSound()
+	if(self.playing_walking_sound) then
+		self:CancelSoundTweenAndReCreate(0);
+	end
+	self.playing_walking_sound = false;
+end
+function WeepingAngelModule:Update()
+	self:GetMoveToPosition();
+	
+	self.humanoid:MoveTo(self.move_to_point);
+end
+
+return WeepingAngelModule;
